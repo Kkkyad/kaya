@@ -429,7 +429,7 @@ jobs:
           username: ${{ secrets.EMAIL_USERNAME }}
           password: ${{ secrets.EMAIL_PASSWORD }}
           subject: "✅ 七牛云智能同步成功 - ${{ github.repository }}"
-          to: 344342823@qq.com
+          to: 3549725002@qq.com
           from: ${{ secrets.EMAIL_USERNAME }}
           reply_to: ${{ secrets.EMAIL_USERNAME }}
           html_body: |
@@ -473,7 +473,7 @@ jobs:
           username: ${{ secrets.EMAIL_USERNAME }}
           password: ${{ secrets.EMAIL_PASSWORD }}
           subject: "⚠️ 七牛云智能同步部分成功 - ${{ github.repository }}"
-          to: 344342823@qq.com
+          to: 3549725002@qq.com
           from: ${{ secrets.EMAIL_USERNAME }}
           reply_to: ${{ secrets.EMAIL_USERNAME }}
           html_body: |
@@ -526,7 +526,7 @@ jobs:
           username: ${{ secrets.EMAIL_USERNAME }}
           password: ${{ secrets.EMAIL_PASSWORD }}
           subject: "ℹ️ 七牛云智能同步 - 无变更 - ${{ github.repository }}"
-          to: 344342823@qq.com
+          to: 3549725002@qq.com
           from: ${{ secrets.EMAIL_USERNAME }}
           reply_to: ${{ secrets.EMAIL_USERNAME }}
           html_body: |
@@ -559,9 +559,9 @@ jobs:
           username: ${{ secrets.EMAIL_USERNAME }}
           password: ${{ secrets.EMAIL_PASSWORD }}
           subject: "❌ 七牛云智能同步失败 - ${{ github.repository }}"
-          to: 344342823@qq.com
+          to: 3549725002@qq.com
           from: ${{ secrets.EMAIL_USERNAME }}
-          reply_to: ${{ secrets.EMAIL_PASSWORD }}
+          reply_to: ${{ secrets.EMAIL_USERNAME }}
           html_body: |
             <h2>❌ 智能同步失败</h2>
             <p><strong>仓库：</strong> ${{ github.repository }}</p>
