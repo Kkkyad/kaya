@@ -1,0 +1,590 @@
+name: 智能增量同步到七牛云
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # 支持手动触发
+
+jobs:
+  smart_deploy_to_qiniu:
+    name: 智能增量同步到七牛云
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取完整历史记录以便比较差异
+        
+      - name: 分析文件变更
+        id: changed-files
+        run: |
+          echo "🔍 正在分析文件变更..."
+          
+          # 初始化变量
+          ADDED_FILES=""
+          MODIFIED_FILES=""
+          DELETED_FILES=""
+          
+          # 获取变更的文件列表
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # 对于 push 事件，比较当前提交与前一个提交
+            if [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+              echo "📋 比较提交: ${{ github.event.before }} -> ${{ github.sha }}"
+              
+              # 检查之前的提交是否存在
+              if git cat-file -e ${{ github.event.before }} 2>/dev/null; then
+                echo "✅ 找到之前的提交，进行差异比较"
+                ADDED_FILES=$(git diff --name-only --diff-filter=A ${{ github.event.before }} ${{ github.sha }} 2>/dev/null || true)
+                MODIFIED_FILES=$(git diff --name-only --diff-filter=M ${{ github.event.before }} ${{ github.sha }} 2>/dev/null || true)
+                DELETED_FILES=$(git diff --name-only --diff-filter=D ${{ github.event.before }} ${{ github.sha }} 2>/dev/null || true)
+              else
+                echo "⚠️ 无法找到之前的提交，回退到 HEAD~1 比较"
+                if git rev-parse HEAD~1 >/dev/null 2>&1; then
+                  ADDED_FILES=$(git diff --name-only --diff-filter=A HEAD~1 HEAD 2>/dev/null || true)
+                  MODIFIED_FILES=$(git diff --name-only --diff-filter=M HEAD~1 HEAD 2>/dev/null || true)
+                  DELETED_FILES=$(git diff --name-only --diff-filter=D HEAD~1 HEAD 2>/dev/null || true)
+                else
+                  echo "⚠️ 这似乎是首次提交，列出所有文件"
+                  ADDED_FILES=$(git ls-tree -r --name-only HEAD 2>/dev/null || true)
+                  MODIFIED_FILES=""
+                  DELETED_FILES=""
+                fi
+              fi
+            else
+              # 首次推送，列出所有文件
+              echo "📋 首次推送，获取所有文件"
+              ADDED_FILES=$(git ls-tree -r --name-only HEAD 2>/dev/null || true)
+              MODIFIED_FILES=""
+              DELETED_FILES=""
+            fi
+          else
+            # 手动触发，显示最近一次提交的变更
+            echo "📋 手动触发，分析最近一次提交的变更"
+            if git rev-parse HEAD~1 >/dev/null 2>&1; then
+              ADDED_FILES=$(git diff --name-only --diff-filter=A HEAD~1 HEAD 2>/dev/null || true)
+              MODIFIED_FILES=$(git diff --name-only --diff-filter=M HEAD~1 HEAD 2>/dev/null || true)
+              DELETED_FILES=$(git diff --name-only --diff-filter=D HEAD~1 HEAD 2>/dev/null || true)
+            else
+              echo "⚠️ 只有一个提交，列出所有文件"
+              ADDED_FILES=$(git ls-tree -r --name-only HEAD 2>/dev/null || true)
+              MODIFIED_FILES=""
+              DELETED_FILES=""
+            fi
+          fi
+          
+          # 过滤掉不需要同步的文件（如.git相关文件）
+          filter_files() {
+            echo "$1" | grep -v "^\.git" | grep -v "^\.github/" | grep -v "README\.md$" | grep -v "\.gitignore$" || true
+          }
+          
+          echo "🔍 过滤不需要同步的文件..."
+          ADDED_FILES_FILTERED=$(filter_files "$ADDED_FILES")
+          MODIFIED_FILES_FILTERED=$(filter_files "$MODIFIED_FILES")
+          DELETED_FILES_FILTERED=$(filter_files "$DELETED_FILES")
+          
+          # 显示详细的变更信息
+          echo ""
+          echo "📊 文件变更分析详情："
+          
+          # 统计新增文件
+          if [ -n "$ADDED_FILES_FILTERED" ] && [ "$ADDED_FILES_FILTERED" != "" ]; then
+            ADDED_COUNT=$(echo "$ADDED_FILES_FILTERED" | wc -l)
+            echo "➕ 新增文件: $ADDED_COUNT 个"
+            echo "$ADDED_FILES_FILTERED" | head -10 | sed 's/^/    📄 新增: /'
+            if [ "$ADDED_COUNT" -gt 10 ]; then
+              echo "    ... 还有 $(($ADDED_COUNT - 10)) 个新增文件"
+            fi
+          else
+            ADDED_COUNT=0
+            echo "➕ 新增文件: 0 个"
+          fi
+          
+          # 统计修改文件
+          if [ -n "$MODIFIED_FILES_FILTERED" ] && [ "$MODIFIED_FILES_FILTERED" != "" ]; then
+            MODIFIED_COUNT=$(echo "$MODIFIED_FILES_FILTERED" | wc -l)
+            echo "✏️ 修改文件: $MODIFIED_COUNT 个"
+            echo "$MODIFIED_FILES_FILTERED" | head -10 | sed 's/^/    📝 修改: /'
+            if [ "$MODIFIED_COUNT" -gt 10 ]; then
+              echo "    ... 还有 $(($MODIFIED_COUNT - 10)) 个修改文件"
+            fi
+          else
+            MODIFIED_COUNT=0
+            echo "✏️ 修改文件: 0 个"
+          fi
+          
+          # 统计删除文件
+          if [ -n "$DELETED_FILES_FILTERED" ] && [ "$DELETED_FILES_FILTERED" != "" ]; then
+            DELETED_COUNT=$(echo "$DELETED_FILES_FILTERED" | wc -l)
+            echo "🗑️ 删除文件: $DELETED_COUNT 个"
+            echo "$DELETED_FILES_FILTERED" | head -10 | sed 's/^/    🗂️ 删除: /'
+            if [ "$DELETED_COUNT" -gt 10 ]; then
+              echo "    ... 还有 $(($DELETED_COUNT - 10)) 个删除文件"
+            fi
+          else
+            DELETED_COUNT=0
+            echo "🗑️ 删除文件: 0 个"
+          fi
+          
+          # 合并需要上传的文件（新增+修改）
+          echo ""
+          echo "📤 准备上传文件列表（新增+修改）..."
+          if [ "$ADDED_COUNT" -gt 0 ] || [ "$MODIFIED_COUNT" -gt 0 ]; then
+            UPLOAD_FILES=$(echo -e "$ADDED_FILES_FILTERED\n$MODIFIED_FILES_FILTERED" | grep -v "^$" | sort | uniq || true)
+            UPLOAD_COUNT=$(echo "$UPLOAD_FILES" | wc -l)
+            echo "📊 总共需要上传: $UPLOAD_COUNT 个文件"
+          else
+            UPLOAD_FILES=""
+            UPLOAD_COUNT=0
+            echo "📊 没有文件需要上传"
+          fi
+          
+          echo ""
+          echo "📋 最终同步计划："
+          echo "- 📤 需要上传的文件: $UPLOAD_COUNT 个（新增: $ADDED_COUNT + 修改: $MODIFIED_COUNT）"
+          echo "- 🗑️ 需要删除的文件: $DELETED_COUNT 个"
+          
+          # 保存变更信息到输出变量
+          {
+            echo "upload_files<<EOF"
+            echo "$UPLOAD_FILES"
+            echo "EOF"
+            echo "deleted_files<<EOF"
+            echo "$DELETED_FILES_FILTERED"
+            echo "EOF"
+            echo "added_files<<EOF"
+            echo "$ADDED_FILES_FILTERED"
+            echo "EOF"
+            echo "modified_files<<EOF"
+            echo "$MODIFIED_FILES_FILTERED"
+            echo "EOF"
+            echo "upload_count=$UPLOAD_COUNT"
+            echo "deleted_count=$DELETED_COUNT"
+            echo "added_count=$ADDED_COUNT"
+            echo "modified_count=$MODIFIED_COUNT"
+          } >> $GITHUB_OUTPUT
+        
+      - name: 安装 QShell 工具
+        run: |
+          echo "📦 正在下载并安装 QShell..."
+          wget https://github.com/qiniu/qshell/releases/download/v2.13.0/qshell-v2.13.0-linux-amd64.tar.gz -O qshell.tar.gz
+          if [ $? -ne 0 ]; then
+            echo "❌ 下载 QShell 失败，退出。"
+            exit 1
+          fi
+          
+          echo "📦 正在解压 QShell..."
+          tar -zxvf qshell.tar.gz
+          
+          if [ -f "qshell-v2.13.0-linux-amd64" ]; then
+            sudo mv qshell-v2.13.0-linux-amd64 /usr/local/bin/qshell
+          elif [ -f "qshell" ]; then
+            sudo mv qshell /usr/local/bin/qshell
+          else
+            echo "❌ 解压后未找到 qshell 可执行文件"
+            ls -la
+            exit 1
+          fi
+          
+          sudo chmod +x /usr/local/bin/qshell
+          echo "✅ QShell 安装完成"
+          qshell -v || qshell version || echo "QShell 已安装"
+          
+      - name: 配置七牛云账户
+        env:
+          QINIU_ACCESS_KEY: ${{ secrets.QINIU_ACCESS_KEY }}
+          QINIU_SECRET_KEY: ${{ secrets.QINIU_SECRET_KEY }}
+        run: |
+          echo "🔑 正在配置七牛云账户..."
+          if [ -z "$QINIU_ACCESS_KEY" ] || [ -z "$QINIU_SECRET_KEY" ]; then
+            echo "❌ 七牛云密钥未设置"
+            exit 1
+          fi
+          
+          qshell account "$QINIU_ACCESS_KEY" "$QINIU_SECRET_KEY" "github-actions-智能同步"
+          if [ $? -eq 0 ]; then
+            echo "✅ 七牛云账户配置成功"
+          else
+            echo "❌ 七牛云账户配置失败"
+            exit 1
+          fi
+          
+      - name: 测试七牛云连接
+        env:
+          QINIU_BUCKET_NAME: ${{ secrets.QINIU_BUCKET_NAME }}
+        run: |
+          echo "🔍 测试七牛云连接..."
+          if [ -z "$QINIU_BUCKET_NAME" ]; then
+            echo "❌ QINIU_BUCKET_NAME 未设置"
+            exit 1
+          fi
+          
+          echo "存储桶: $QINIU_BUCKET_NAME"
+          qshell listbucket "$QINIU_BUCKET_NAME" "" 1 || echo "⚠️ 连接测试完成"
+          
+      - name: 智能增量同步文件
+        id: smart-sync
+        env:
+          QINIU_BUCKET_NAME: ${{ secrets.QINIU_BUCKET_NAME }}
+          QINIU_BUCKET_PREFIX: ${{ secrets.QINIU_BUCKET_PREFIX || '' }}
+        run: |
+          echo "🚀 开始智能增量同步..."
+          
+          upload_files="${{ steps.changed-files.outputs.upload_files }}"
+          deleted_files="${{ steps.changed-files.outputs.deleted_files }}"
+          upload_count="${{ steps.changed-files.outputs.upload_count }}"
+          deleted_count="${{ steps.changed-files.outputs.deleted_count }}"
+          added_count="${{ steps.changed-files.outputs.added_count }}"
+          modified_count="${{ steps.changed-files.outputs.modified_count }}"
+          
+          success_count=0
+          failure_count=0
+          delete_success=0
+          delete_failure=0
+          added_success=0
+          modified_success=0
+          
+          echo "📊 本次同步任务："
+          echo "- 📤 上传文件总数: $upload_count 个（新增: $added_count + 修改: $modified_count）"
+          echo "- 🗑️ 删除文件总数: $deleted_count 个"
+          
+          # 步骤1：上传变更的文件（新增+修改）
+          if [ "$upload_count" -gt 0 ]; then
+            echo ""
+            echo "📤 开始上传 $upload_count 个文件..."
+            echo "   - 其中新增文件: $added_count 个"
+            echo "   - 其中修改文件: $modified_count 个"
+            
+            # 创建上传列表文件
+            echo "$upload_files" > upload_list.txt
+            
+            # 逐个上传文件
+            current_file=1
+            while IFS= read -r file; do
+              if [ -n "$file" ] && [ -f "$file" ]; then
+                echo "📤 [$current_file/$upload_count] 正在上传: $file"
+                
+                # 判断文件类型（新增还是修改）
+                if echo "${{ steps.changed-files.outputs.added_files }}" | grep -q "^$file$"; then
+                  file_type="新增"
+                elif echo "${{ steps.changed-files.outputs.modified_files }}" | grep -q "^$file$"; then
+                  file_type="修改"
+                else
+                  file_type="未知"
+                fi
+                
+                echo "   🏷️  文件类型: $file_type"
+                
+                # 构建远程路径
+                if [ -n "$QINIU_BUCKET_PREFIX" ]; then
+                  remote_path="${QINIU_BUCKET_PREFIX}${file}"
+                else
+                  remote_path="$file"
+                fi
+                
+                echo "   🎯 远程路径: $remote_path"
+                
+                # 上传文件（使用 --overwrite 强制覆盖已存在的文件）
+                if qshell fput "$QINIU_BUCKET_NAME" "$remote_path" "$file" --overwrite; then
+                  echo "   ✅ 上传成功: $file"
+                  success_count=$((success_count + 1))
+                  
+                  # 统计成功类型
+                  if [ "$file_type" = "新增" ]; then
+                    added_success=$((added_success + 1))
+                  elif [ "$file_type" = "修改" ]; then
+                    modified_success=$((modified_success + 1))
+                  fi
+                else
+                  echo "   ❌ 上传失败: $file"
+                  failure_count=$((failure_count + 1))
+                fi
+                
+                current_file=$((current_file + 1))
+                echo ""
+              fi
+            done < upload_list.txt
+            
+            echo "📊 上传阶段完成："
+            echo "- ✅ 上传成功: $success_count/$upload_count"
+            echo "- ❌ 上传失败: $failure_count"
+            echo "- 📄 新增文件成功: $added_success/$added_count"
+            echo "- 📝 修改文件成功: $modified_success/$modified_count"
+          else
+            echo "ℹ️ 没有文件需要上传"
+          fi
+          
+          # 步骤2：删除远程多余的文件
+          if [ "$deleted_count" -gt 0 ]; then
+            echo ""
+            echo "🗑️ 开始删除 $deleted_count 个远程文件..."
+            
+            echo "$deleted_files" > delete_list.txt
+            
+            current_delete=1
+            while IFS= read -r file; do
+              if [ -n "$file" ]; then
+                echo "🗑️ [$current_delete/$deleted_count] 正在删除: $file"
+                
+                # 构建远程路径
+                if [ -n "$QINIU_BUCKET_PREFIX" ]; then
+                  remote_path="${QINIU_BUCKET_PREFIX}${file}"
+                else
+                  remote_path="$file"
+                fi
+                
+                echo "   🎯 远程路径: $remote_path"
+                
+                # 删除文件
+                if qshell delete "$QINIU_BUCKET_NAME" "$remote_path"; then
+                  echo "   ✅ 删除成功: $file"
+                  delete_success=$((delete_success + 1))
+                else
+                  echo "   ⚠️ 删除失败或文件不存在: $file"
+                  delete_failure=$((delete_failure + 1))
+                fi
+                
+                current_delete=$((current_delete + 1))
+                echo ""
+              fi
+            done < delete_list.txt
+            
+            echo "📊 删除阶段完成："
+            echo "- ✅ 删除成功: $delete_success/$deleted_count"
+            echo "- ⚠️ 删除失败: $delete_failure"
+          else
+            echo "ℹ️ 没有文件需要删除"
+          fi
+          
+          # 计算总体结果
+          total_operations=$((upload_count + deleted_count))
+          total_success=$((success_count + delete_success))
+          
+          echo ""
+          echo "🎯 智能同步最终结果统计："
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📤 上传统计："
+          echo "   - 📄 新增文件: $added_success/$added_count 成功"
+          echo "   - 📝 修改文件: $modified_success/$modified_count 成功"
+          echo "   - 📊 上传总计: $success_count/$upload_count 成功"
+          echo "   - ❌ 上传失败: $failure_count 个"
+          echo ""
+          echo "🗑️ 删除统计："
+          echo "   - ✅ 删除成功: $delete_success/$deleted_count"
+          echo "   - ❌ 删除失败: $delete_failure 个"
+          echo ""
+          echo "🏆 总体统计："
+          echo "   - 📋 总操作数: $total_operations"
+          echo "   - ✅ 成功操作: $total_success"
+          echo "   - 📈 成功率: $(($total_success * 100 / ($total_operations > 0 ? $total_operations : 1)))%"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          # 确定同步状态
+          if [ "$total_operations" -eq 0 ]; then
+            sync_status="no_changes"
+            echo "ℹ️ 没有文件变更，无需同步"
+          elif [ "$failure_count" -eq 0 ] && [ "$delete_failure" -eq 0 ]; then
+            sync_status="complete_success"
+            echo "🎉 所有操作都成功完成！"
+          elif [ "$success_count" -gt 0 ] || [ "$delete_success" -gt 0 ]; then
+            sync_status="partial_success"
+            echo "⚠️ 部分操作成功，存在失败项"
+          else
+            sync_status="failed"
+            echo "❌ 同步操作失败"
+          fi
+          
+          # 保存结果到输出变量
+          {
+            echo "sync_status=$sync_status"
+            echo "upload_success=$success_count"
+            echo "upload_failure=$failure_count"
+            echo "delete_success=$delete_success"
+            echo "delete_failure=$delete_failure"
+            echo "added_success=$added_success"
+            echo "modified_success=$modified_success"
+            echo "total_operations=$total_operations"
+            echo "total_success=$total_success"
+          } >> $GITHUB_OUTPUT
+          
+          echo ""
+          echo "🎉 智能增量同步完成！"
+
+      - name: 清理临时文件
+        if: always()
+        run: |
+          echo "🧹 清理临时文件..."
+          rm -f qshell.tar.gz upload_list.txt delete_list.txt
+          echo "✅ 清理完成"
+
+      # 成功通知
+      - name: 发送成功通知邮件
+        if: steps.smart-sync.outputs.sync_status == 'complete_success'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.qq.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "✅ 七牛云智能同步成功 - ${{ github.repository }}"
+          to: 344342823@qq.com
+          from: ${{ secrets.EMAIL_USERNAME }}
+          reply_to: ${{ secrets.EMAIL_USERNAME }}
+          html_body: |
+            <h2>🎉 智能增量同步成功</h2>
+            <p><strong>仓库：</strong> ${{ github.repository }}</p>
+            <p><strong>分支：</strong> ${{ github.ref_name }}</p>
+            <p><strong>提交：</strong> ${{ github.sha }}</p>
+            <p><strong>提交者：</strong> ${{ github.actor }}</p>
+            <p><strong>提交信息：</strong> ${{ github.event.head_commit.message }}</p>
+            <p><strong>同步时间：</strong> ${{ github.event.head_commit.timestamp }}</p>
+            <p><strong>存储桶：</strong> ${{ secrets.QINIU_BUCKET_NAME }}</p>
+            
+            <h3>📊 智能同步统计</h3>
+            <p><strong>📄 新增文件：</strong> ${{ steps.smart-sync.outputs.added_success }} / ${{ steps.changed-files.outputs.added_count }} 个成功</p>
+            <p><strong>📝 修改文件：</strong> ${{ steps.smart-sync.outputs.modified_success }} / ${{ steps.changed-files.outputs.modified_count }} 个成功</p>
+            <p><strong>📤 上传文件：</strong> ${{ steps.smart-sync.outputs.upload_success }} / ${{ steps.changed-files.outputs.upload_count }} 个成功</p>
+            <p><strong>🗑️ 删除文件：</strong> ${{ steps.smart-sync.outputs.delete_success }} / ${{ steps.changed-files.outputs.deleted_count }} 个成功</p>
+            <p><strong>📋 总操作数：</strong> ${{ steps.smart-sync.outputs.total_operations }}</p>
+            <p><strong>📈 成功率：</strong> 100%</p>
+            
+            <h3>📝 文件变更详情</h3>
+            <h4>📄 新增的文件</h4>
+            <pre>${{ steps.changed-files.outputs.added_files }}</pre>
+            <h4>📝 修改的文件</h4>
+            <pre>${{ steps.changed-files.outputs.modified_files }}</pre>
+            <h4>🗑️ 删除的文件</h4>
+            <pre>${{ steps.changed-files.outputs.deleted_files }}</pre>
+            
+            <hr>
+            <p>✅ 智能增量同步完成，所有新增和修改的文件都已成功上传！</p>
+            <p>🔗 <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">查看详细日志</a></p>
+
+      # 部分成功通知
+      - name: 发送部分成功通知邮件
+        if: steps.smart-sync.outputs.sync_status == 'partial_success'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.qq.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "⚠️ 七牛云智能同步部分成功 - ${{ github.repository }}"
+          to: 344342823@qq.com
+          from: ${{ secrets.EMAIL_USERNAME }}
+          reply_to: ${{ secrets.EMAIL_USERNAME }}
+          html_body: |
+            <h2>⚠️ 智能同步部分成功</h2>
+            <p><strong>仓库：</strong> ${{ github.repository }}</p>
+            <p><strong>分支：</strong> ${{ github.ref_name }}</p>
+            <p><strong>提交：</strong> ${{ github.sha }}</p>
+            <p><strong>提交者：</strong> ${{ github.actor }}</p>
+            <p><strong>提交信息：</strong> ${{ github.event.head_commit.message }}</p>
+            <p><strong>同步时间：</strong> ${{ github.event.head_commit.timestamp }}</p>
+            <p><strong>存储桶：</strong> ${{ secrets.QINIU_BUCKET_NAME }}</p>
+            
+            <h3>📊 智能同步统计</h3>
+            <p><strong>📄 新增文件：</strong> ${{ steps.smart-sync.outputs.added_success }} / ${{ steps.changed-files.outputs.added_count }} 个成功</p>
+            <p><strong>📝 修改文件：</strong> ${{ steps.smart-sync.outputs.modified_success }} / ${{ steps.changed-files.outputs.modified_count }} 个成功</p>
+            <p><strong>📤 上传成功：</strong> ${{ steps.smart-sync.outputs.upload_success }} 个</p>
+            <p><strong>❌ 上传失败：</strong> ${{ steps.smart-sync.outputs.upload_failure }} 个</p>
+            <p><strong>✅ 删除成功：</strong> ${{ steps.smart-sync.outputs.delete_success }} 个</p>
+            <p><strong>❌ 删除失败：</strong> ${{ steps.smart-sync.outputs.delete_failure }} 个</p>
+            <p><strong>📋 总操作数：</strong> ${{ steps.smart-sync.outputs.total_operations }}</p>
+            <p><strong>✅ 成功操作：</strong> ${{ steps.smart-sync.outputs.total_success }}</p>
+            
+            <h3>📝 文件变更详情</h3>
+            <h4>📄 尝试新增的文件</h4>
+            <pre>${{ steps.changed-files.outputs.added_files }}</pre>
+            <h4>📝 尝试修改的文件</h4>
+            <pre>${{ steps.changed-files.outputs.modified_files }}</pre>
+            <h4>🗑️ 尝试删除的文件</h4>
+            <pre>${{ steps.changed-files.outputs.deleted_files }}</pre>
+            
+            <hr>
+            <p>⚠️ 部分操作成功，建议检查失败原因</p>
+            <p>🔗 <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">查看详细日志</a></p>
+            <p>📋 <strong>建议操作：</strong></p>
+            <ul>
+              <li>检查失败文件的具体错误原因</li>
+              <li>确认七牛云存储桶权限配置</li>
+              <li>验证网络连接稳定性</li>
+              <li>手动重新触发工作流重试</li>
+            </ul>
+
+      # 无变更通知（可选）
+      - name: 发送无变更通知邮件
+        if: steps.smart-sync.outputs.sync_status == 'no_changes'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.qq.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "ℹ️ 七牛云智能同步 - 无变更 - ${{ github.repository }}"
+          to: 344342823@qq.com
+          from: ${{ secrets.EMAIL_USERNAME }}
+          reply_to: ${{ secrets.EMAIL_USERNAME }}
+          html_body: |
+            <h2>ℹ️ 智能同步检查完成</h2>
+            <p><strong>仓库：</strong> ${{ github.repository }}</p>
+            <p><strong>分支：</strong> ${{ github.ref_name }}</p>
+            <p><strong>提交：</strong> ${{ github.sha }}</p>
+            <p><strong>提交者：</strong> ${{ github.actor }}</p>
+            <p><strong>提交信息：</strong> ${{ github.event.head_commit.message }}</p>
+            <p><strong>检查时间：</strong> ${{ github.event.head_commit.timestamp }}</p>
+            
+            <h3>📊 检查结果</h3>
+            <p><strong>📄 新增文件：</strong> 0 个</p>
+            <p><strong>📝 修改文件：</strong> 0 个</p>
+            <p><strong>🗑️ 删除文件：</strong> 0 个</p>
+            <p><strong>状态：</strong> 无需同步</p>
+            
+            <hr>
+            <p>ℹ️ 本次提交没有需要同步到七牛云的文件变更</p>
+            <p>🔗 <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">查看详细日志</a></p>
+
+      # 完全失败通知
+      - name: 发送失败通知邮件
+        if: failure() || steps.smart-sync.outputs.sync_status == 'failed'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.qq.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "❌ 七牛云智能同步失败 - ${{ github.repository }}"
+          to: 344342823@qq.com
+          from: ${{ secrets.EMAIL_USERNAME }}
+          reply_to: ${{ secrets.EMAIL_PASSWORD }}
+          html_body: |
+            <h2>❌ 智能同步失败</h2>
+            <p><strong>仓库：</strong> ${{ github.repository }}</p>
+            <p><strong>分支：</strong> ${{ github.ref_name }}</p>
+            <p><strong>提交：</strong> ${{ github.sha }}</p>
+            <p><strong>提交者：</strong> ${{ github.actor }}</p>
+            <p><strong>提交信息：</strong> ${{ github.event.head_commit.message }}</p>
+            <p><strong>失败时间：</strong> ${{ github.event.head_commit.timestamp }}</p>
+            
+            <h3>📊 尝试同步的文件</h3>
+            <p><strong>📄 计划新增：</strong> ${{ steps.changed-files.outputs.added_count || '未知' }} 个文件</p>
+            <p><strong>📝 计划修改：</strong> ${{ steps.changed-files.outputs.modified_count || '未知' }} 个文件</p>
+            <p><strong>📤 计划上传：</strong> ${{ steps.changed-files.outputs.upload_count || '未知' }} 个文件</p>
+            <p><strong>🗑️ 计划删除：</strong> ${{ steps.changed-files.outputs.deleted_count || '未知' }} 个文件</p>
+            
+            <hr>
+            <p>❌ 智能同步过程中发生关键错误</p>
+            <p>🔗 <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">查看详细日志</a></p>
+            <p>📋 <strong>排查步骤：</strong></p>
+            <ul>
+              <li>检查七牛云密钥配置</li>
+              <li>确认存储桶权限</li>
+              <li>验证网络连接</li>
+              <li>检查 QShell 工具安装</li>
+              <li>查看详细错误日志</li>
+            </ul>
