@@ -1,6 +1,5 @@
 # 基础打印语句
 print("Hello, World!")
-print('你好，世界！')
 
 # 变量打印
 name = "Alice"
